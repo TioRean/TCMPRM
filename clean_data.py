@@ -1,0 +1,545 @@
+# -*- coding: utf-8 -*-
+
+
+import json
+
+import re
+
+
+def remove_fragmented_in_parentheses(sentence, short_filtered: list, long_filtered: list, filter_list, filter_li_B,
+                                     exception, bracket_filt_max_num):
+    pattern = r'（[^）]*）|$[^)]*$'
+
+    def check_and_replace(match):
+        content = match.group()
+        if any(keyword in content for keyword in filter_list):
+            if filter_li_B:
+                skip = True
+                for m in filter_li_B:
+                    if m in content:
+                        skip = False
+                        break
+            else:
+                skip = False
+
+            for n in exception:
+                if n in content:
+                    skip = True
+                    break
+
+            if not skip:
+                if len(content) >= bracket_filt_max_num:
+                    long_filtered.append(content)
+                    return match.group()
+                else:
+                    short_filtered.append(content)
+                    return ''
+
+        else:
+            return match.group()
+
+    result = re.sub(pattern, check_and_replace, sentence)
+    return result, short_filtered, long_filtered
+
+
+def filt_1(text, filter_li, keyi, filter_li_B, sent_wise, exception, if_filter: bool, bracket_filt_max_num, filt_line):
+    new_sentences = []
+    specious = []
+    short_filtered = []
+    long_filtered = []
+    text, short_filtered, long_filtered = remove_fragmented_in_parentheses(text, short_filtered, long_filtered,
+                                                                           filter_li, filter_li_B, exception,
+                                                                           bracket_filt_max_num)
+    sentences = [s.strip() for s in text.split('。') if s.strip()]
+
+    for i, sentence in enumerate(sentences):
+        accept = True
+        keyi_dict = {'elems': [], 'sentence': ''}
+        for elem in filter_li:
+            if elem in sentence:
+                if len(sentence) > filt_line:
+                    long_filtered.append({'elem': elem, 'sentence': sentence})
+
+                else:
+                    if filter_li_B and not sent_wise:
+                        skip = True
+                        for m in filter_li_B:
+                            if m in sentence:
+                                skip = False
+                                break
+                    elif filter_li_B and sent_wise:
+                        skip = True
+                        break_flag = False
+                        for m in filter_li_B:
+                            for x in sentence.split('，'):
+                                if m in x and elem in x:
+                                    skip = False
+                                    break_flag = True
+                                    break
+                            if break_flag:
+                                break
+                    else:
+                        skip = False
+                    for n in exception:
+                        if n in sentence:
+                            skip = True
+                            break
+                    if not skip:
+                        short_filtered.append({'elem': elem, 'sentence': sentence})
+                        if if_filter:
+                            accept = False
+                        break
+
+        for elem in keyi:
+            if elem in sentence:
+                keyi_dict['elems'].append(elem)
+        if len(keyi_dict['elems']) and accept:
+            keyi_dict['sentence'] += sentence
+            specious.append(keyi_dict)
+        if accept:
+            new_sentences.append(sentence)
+    result = '。'.join(new_sentences)
+    if text.endswith('。') and result:
+        result += '。'
+
+    return result, specious, short_filtered, long_filtered
+
+
+def filt_2(text, filter_li, filter_li_B, sent_wise, exception, if_filter: bool, last_n, bracket_filt_max_num,
+           filt_line):
+    new_sentences = []
+    specious = []
+    short_filtered = []
+    long_filtered = []
+
+    text, short_filtered, long_filtered = remove_fragmented_in_parentheses(text, short_filtered, long_filtered,
+                                                                           filter_li, filter_li_B, exception,
+                                                                           bracket_filt_max_num)
+
+    sentences = [s.strip() for s in text.split('。') if s.strip()]
+    last_filt_sent = {'elem': '', 'sentence': []}
+    add_rest = False
+    for i, sentence in enumerate(sentences):
+        accept = True
+        if i >= len(sentences) - last_n:
+            if not add_rest:
+                for elem in filter_li:
+                    if elem in sentence:
+                        last_filt_sent['elem'] += elem
+                        last_filt_sent['sentence'].append(sentence)
+                        add_rest = True
+                        accept = False
+                        break
+            else:
+                last_filt_sent['sentence'].append(sentence)
+                accept = False
+        if accept:
+            new_sentences.append(sentence)
+            continue
+        if i == len(sentences) - 1:
+            last_filt_sent['sentence'] = '。'.join(last_filt_sent['sentence'])
+            if len(last_filt_sent['sentence']) > filt_line:
+                long_filtered.append(last_filt_sent)
+                new_sentences.append(last_filt_sent['sentence'])
+            else:
+                if filter_li_B and not sent_wise:
+                    skip = True
+                    for m in filter_li_B:
+                        if m in last_filt_sent['sentence']:
+                            skip = False
+                            break
+                elif filter_li_B and sent_wise:
+                    skip = True
+                    break_flag = False
+                    for m in filter_li_B:
+                        for x in last_filt_sent['sentence'].split('，'):
+                            if m in x and last_filt_sent['elem'] in x:
+                                skip = False
+                                break_flag = True
+                                break
+                        if break_flag:
+                            break
+                else:
+                    skip = False
+
+                for n in exception:
+                    if n in last_filt_sent['sentence']:
+                        skip = True
+                        break
+
+                if not skip:
+                    short_filtered.append(last_filt_sent)
+                    if not if_filter:
+                        new_sentences.append(last_filt_sent['sentence'])
+                else:
+                    new_sentences.append(last_filt_sent['sentence'])
+
+    result = '。'.join(new_sentences)
+
+    if text.endswith('。') and result and not result.endswith('。'):
+        result += '。'
+
+    return result, specious, short_filtered, long_filtered
+
+
+def process_jsonl(input_file, output_file, mod, process_inf, filter_list, keyi=None, filter_list_B=None, exception=None,
+                  sent_wise=False,
+                  split_save=True, last_n=1, bracket_filt_max_num=0,
+                  filt_line=100):
+    with open(input_file, 'r', encoding='utf-8') as infile, \
+            open(output_file, 'w', encoding='utf-8') as outfile, \
+            open('./Gen/过滤元素_short.txt', 'w') as short_filtered_file, \
+            open('./Gen/过滤元素_long.txt', 'w') as long_filtered_file, \
+            open('./Gen/其他医案.jsonl', 'w') as other_file:
+        for line in infile:
+            try:
+                data = json.loads(line.strip())
+                if isinstance(data, dict):
+                    data = [data['input'], data['output']]
+                if mod == 1:
+                    if split_save:
+                        # if all([not in_short_filtered, not in_long_filtered, not out_short_filtered, not out_long_filtered]):
+                        if process_inf == 'input':
+
+                            inp, specious, short_filtered, long_filtered = filt_1(data[0], filter_list,
+                                                                                  keyi,
+                                                                                  filter_list_B, sent_wise,
+                                                                                  exception,
+                                                                                  if_filter=False,
+                                                                                  bracket_filt_max_num=bracket_filt_max_num,
+                                                                                  filt_line=filt_line)
+                            if short_filtered:
+                                other_file.write(
+                                    json.dumps([inp, data[1]], ensure_ascii=False) + '\n')
+                            else:
+                                outfile.write(
+                                    json.dumps([inp, data[1]], ensure_ascii=False) + '\n')
+                        elif process_inf == 'output':
+                            oup, specious, short_filtered, long_filtered = filt_1(data[1], filter_list,
+                                                                                  keyi,
+                                                                                  filter_list_B, sent_wise,
+                                                                                  exception,
+                                                                                  if_filter=False,
+                                                                                  bracket_filt_max_num=bracket_filt_max_num,
+                                                                                  filt_line=filt_line)
+                            if short_filtered:
+                                other_file.write(
+                                    json.dumps([data[0], oup], ensure_ascii=False) + '\n')
+                            else:
+                                outfile.write(
+                                    json.dumps([data[0], oup], ensure_ascii=False) + '\n')
+                        else:
+                            raise Exception
+
+                    else:
+                        if process_inf == 'input':
+                            inp, specious, short_filtered, long_filtered = filt_1(data[0], filter_list,
+                                                                                  keyi, filter_list_B,
+                                                                                  sent_wise,
+                                                                                  exception, if_filter=True,
+                                                                                  bracket_filt_max_num=bracket_filt_max_num,
+                                                                                  filt_line=filt_line)
+                            outfile.write(
+                                json.dumps([inp, data[1]], ensure_ascii=False) + '\n')
+                        elif process_inf == 'output':
+                            oup, specious, short_filtered, long_filtered = filt_1(data[1], filter_list,
+                                                                                  keyi, filter_list_B,
+                                                                                  sent_wise,
+                                                                                  exception, if_filter=True,
+                                                                                  bracket_filt_max_num=bracket_filt_max_num,
+                                                                                  filt_line=filt_line)
+                            outfile.write(
+                                json.dumps([data[0], oup], ensure_ascii=False) + '\n')
+                        else:
+                            raise Exception
+                elif mod == 2:
+                    if split_save:
+                        # if all([not in_short_filtered, not in_long_filtered, not out_short_filtered, not out_long_filtered]):
+                        if process_inf == 'input':
+                            inp, specious, short_filtered, long_filtered = filt_2(data[0], filter_list,
+                                                                                  filter_list_B, sent_wise,
+                                                                                  exception,
+                                                                                  if_filter=False, last_n=last_n,
+                                                                                  bracket_filt_max_num=bracket_filt_max_num,
+                                                                                  filt_line=filt_line)
+                            if short_filtered:
+                                other_file.write(
+                                    json.dumps([inp, data[1]], ensure_ascii=False) + '\n')
+                            else:
+                                outfile.write(
+                                    json.dumps([inp, data[1]], ensure_ascii=False) + '\n')
+
+                        elif process_inf == 'output':
+                            oup, specious, short_filtered, long_filtered = filt_2(data[1],
+                                                                                  out_filter_list,
+                                                                                  out_filter_list_B, sent_wise,
+                                                                                  out_exception,
+                                                                                  if_filter=False,
+                                                                                  last_n=last_n,
+                                                                                  bracket_filt_max_num=bracket_filt_max_num,
+                                                                                  filt_line=filt_line)
+                            if short_filtered:
+                                other_file.write(
+                                    json.dumps([data[0], oup], ensure_ascii=False) + '\n')
+                            else:
+                                outfile.write(
+                                    json.dumps([data[0], oup], ensure_ascii=False) + '\n')
+
+                    else:
+                        if process_inf == 'input':
+                            inp, specious, short_filtered, long_filtered = filt_2(data[0], filter_list,
+                                                                                  filter_list_B,
+                                                                                  sent_wise, exception,
+                                                                                  if_filter=True, last_n=last_n,
+                                                                                  bracket_filt_max_num=bracket_filt_max_num,
+                                                                                  filt_line=filt_line)
+                            outfile.write(
+                                json.dumps([inp, data[1]], ensure_ascii=False) + '\n')
+                        elif process_inf == 'output':
+                            oup, specious, short_filtered, long_filtered = filt_2(data[1],
+                                                                                  out_filter_list, out_filter_list_B,
+                                                                                  sent_wise, out_exception,
+                                                                                  if_filter=True, last_n=last_n,
+                                                                                  bracket_filt_max_num=bracket_filt_max_num,
+                                                                                  filt_line=filt_line)
+                            outfile.write(
+                                json.dumps([data[0], oup], ensure_ascii=False) + '\n')
+                        else:
+                            raise Exception
+
+                for x in short_filtered:
+                    short_filtered_file.write(str(x) + '\n')
+                for x in long_filtered:
+                    long_filtered_file.write(str(x) + '\n')
+            except json.JSONDecodeError:
+                print(f"警告: 跳过无效的JSON行: {line.strip()}")
+
+
+out_filter_list = {'改变原意', '无关内容', '单症状', '阳性信息', '评价性按语', '无关内容', '原信息内容', '自洽',
+                   '处方结构', '命名规范', '原信息', '无关内容', '未增减方药', '改变剂量', '改变剂量与煎服法',
+                   '单一系统', '自相矛盾', '增减方药、剂量、煎服法', '书写规范', '顺序排列', '20字',
+                   '逻辑清晰', '书写要求', '原始信息', '（完）', '(完)', '主诉精炼', '同义改写', '改写', '规范整理',
+                   '不影响辨证论治结果', '信息重构', '保留全部信息', '同义改写', '补充内容',
+                   '书写习惯', '调整顺序', '多系统疾病', '原辨证结果', '支持辨证', '额外症状', '未改变方药',
+                   '不影响原辨证结果', '多余注释', '评价性语句', '原信息', '主观评价', '原方要求', '医学情境',
+                   '主诉精炼', '排序', '3个症状', '不妄加减', '方药剂量如旧', '煎服法亦如常法', '用药剂量与原方一致',
+                   '符合医嘱要求', '方药如前', '剂量如旧', '煎服法亦依古法', '煎服法依古法', '用药不增减', '剂量如原方',
+                   '煎服法亦依常规', '煎服法亦依原制', '煎服法亦遵古法', '煎服法亦依古法', '方药不增不减', '剂量如原',
+                   '煎服法亦守旧制', '未增减药味', '与原方一致', '煎服法亦严格遵从', '方药剂量与原方完全一致', '不增不减',
+                   '不加不减', '无增减', '未加减', '未作增减', '单一系统', '单一西医诊断', '影响辨证论治结果', '额外症状',
+                   '主诉精简规范', '书写标准', '改变煎服法', '多系统并列', '补充既往史', '补充个人史', '补充婚育史',
+                   '补充月经史', '补充辅助检查', '剂量与原方一致', '煎服法亦未更动', '煎服法未更动', '方药剂量与原方一致',
+                   '原方一致', '不改原方', '原方药味', '原剂量', '未添加', '无添加', '未改变原', '剂量符合原方', '守原方剂量', '原信息',
+                   '剂量与经方原文一致','剂量未变', '不增减药味', '不改剂量', '遵从原方', '未更改', '依原方', '原方剂量',
+                   '未作加减', '剂量未变', '煎服法未更', '未增减一字', '未增减药物', '剂量未变',
+                   '符合原意', '矛盾信息', '方药、剂量、煎服法均未增减', '方药、剂量、煎服法未增减', '原始信息',
+                   '未增减药物', '方药剂量与原方一致', '未增减', '未加减', '增减方药', '信息重构', '严格依据', '符合原方要求', '原辨证论治', '任何增减', '剂量如旧',
+                   '无增损', '原辨证结论', '额外症状', '额外注释', '剂量未', '加减方药', '亦不增减剂量', '如原方',
+                   '未增未减', '分毫不差', '剂量如前', '方药如旧', '按原方', '无加减', '原方原量', '按原方', '不加减',
+                   '不更动', '未变更 ', '赘字', '阴性信息', '多系统症状', '单系归一', '药量未变', '煎服法未改',
+                   '多系统症状', '诊断与主诉一致', '以主诉定病种', '以症状定证型', '无关症状', '逻辑严密', '未变更',
+                   '未加删改', '未删改', '原始资料', '无更改', '原方药', '原剂量', '原煎服法', '未加他药', '擅自增损',
+                   '更改剂量', '更改煎服法', '未作任何调整', '遵循原', '未改方药', '未增新证', '未改辨证', '不加附会',
+                   '据实记录', '未作更动', '保留原方药', '无关症状', '改原方药', '不变更原', '未作改动', '未作删减',
+                   '原方完全一致', '不更不减', '未作更动', '同原方', '均未改动', '原方未加', '不可更改', '偏离原方',
+                   '严格依据', '严格遵循', '严格遵循', '严格遵从', '药味剂量悉遵原方', '遵原方' '妄加',
+                   '原方原量', '不违原方宗旨', '无修改', '不变', '笔误', '阴性症状', '精简', '精炼',
+                   }
+
+out_filter_list_B = {
+}
+
+out_exception = {
+    '附子汤', '茯苓杏仁甘草汤', '桂枝加厚朴杏子汤', '甘姜苓术汤', '旋复代赭汤', '大半夏汤',
+    '苓甘五味姜辛汤', '越婢加半夏汤', '白虎加桂枝汤', '黄连阿胶鸡子黄汤', '附子粳米汤', '大承气汤',
+    '桂枝附子汤', '柴胡桂枝干姜汤', '吴茱萸汤', '小青龙汤', '半夏厚朴汤', '小半夏汤', '麻杏苡甘汤',
+    '栀子豉汤', '麻黄附子甘草汤', '当归生姜羊肉汤', '葛根芩连汤', '枳实薤白桂枝汤', '薏苡附子败酱散',
+    '四逆散，理中汤', '风引汤', '黄连汤', '理中汤', '栀子大黄汤', '泽漆汤', '白虎汤', '附子泻心汤',
+    '栀子柏皮汤', '桂枝新加汤', '桂枝加龙骨牡蛎汤', '旋覆花汤', '四逆散，小陷胸汤', '半夏泻心汤', '葛根汤',
+    '大黄甘草汤', '大柴胡汤', '麻杏石甘汤', '温经汤', '瓜蒌薤白半夏汤', '调胃承气汤', '生姜泻心汤',
+    '小承气汤', '干姜黄芩黄连人参汤', '黄芪建中汤', '百合地黄汤', '甘草干姜汤', '干姜人参半夏丸',
+    '桂枝加葛根汤', '麻黄附子细辛汤，桂枝去芍药汤', '麻黄附子细辛汤', '乌头赤石脂丸', '栝楼瞿麦丸',
+    '当归芍药散', '桂枝加附子汤', '桂枝加大黄汤', '茵陈蒿汤', '侧柏叶汤', '真武汤', '四逆汤', '升降散',
+    '四逆散，四君子汤', '小陷胸汤', '大建中汤', '酸枣仁汤', '射干麻黄汤', '薯蓣丸', '麦门冬汤',
+    '麻黄连翘赤小豆汤', '大黄附子汤', '桂枝芍药知母汤', '炙甘草汤', '香附旋复花汤', '防己茯苓汤',
+    '大黄蛰虫丸', '桂枝加芍药汤', '乌梅丸', '小柴胡汤', '厚朴七物汤', '芍药甘草汤', '甘草泻心汤',
+    '防己地黄汤', '橘枳姜汤', '麻子仁丸', '补中益气汤', '侯氏黑散', '黄芪桂枝五物汤', '桂枝甘草汤',
+    '枳术汤', '泽泻汤', '木防己汤', '桂枝茯苓丸', '苓桂术甘汤', '小续命汤', '厚朴麻黄汤', '芎归胶艾汤',
+    '甘麦大枣汤', '麻黄升麻汤', '桂枝人参汤', '四逆散', '茵陈五苓散', '大青龙汤', '肾气丸', '奔豚汤',
+    '白头翁汤', '当归四逆汤', '桂枝汤', '越婢加术汤', '厚朴生姜半夏甘草人参汤', '五苓散', '泻心汤',
+    '己椒苈黄丸', '大黄牡丹汤', '栝楼桂枝汤', '柴胡桂枝汤', '黄土汤', '桂枝去芍药汤', '抵当汤',
+    '防己黄芪汤', '白虎加人参汤', '麻黄汤', '桂枝加桂汤', '柴胡加龙骨牡蛎汤', '桂枝麻黄各半汤', '黄芩汤',
+    '麻黄加术汤', '桃核承气汤', '小建中汤', '竹叶石膏汤'
+                                            '葱', '人参', '黄柏', '僵蚕', '葶苈子', '肉桂', '黄芩',
+    '饴糖', '川芎', '当归', '木瓜', '土鳖虫', '栀子', '炙甘草', '蝉蜕', '寒水石', '先煎', '紫菀', '乌药',
+    '枳壳', '陈皮', '白附子', '猪苓', '桃仁', '冬瓜仁', '山药', '升麻', '赤石脂', '茵陈', '枳实', '牛蒡子',
+    '粳米', '磁石', '苏叶', '香附', '白芍', '赤小豆', '大黄', '苦参', '代赭石', '椒目', '炮姜', '布包',
+    '菖蒲', '艾叶', '大枣', '三七', '佩兰', '全蝎', '瓜蒌皮', '血余炭', '生姜', '冲服', '桂枝', '益智仁',
+    '白头翁', '旋复花', '茜草', '败酱草', '牛膝', '莪术', '三棱', '赤芍', '木通', '鸡内金', '白蔹',
+    '李根白皮', '掰开', '细辛', '天花粉', '蜂蜜', '玉竹', '乌头', '巴戟天', '泽漆', '蛴螬', '侧柏叶',
+    '贝母', '干漆', '苍术', '款冬花', '虎杖', '药成后冲入', '石膏', '连翘', '威灵仙', '紫苏叶', '烊化',
+    '羊肉', '独活', '麦冬', '酸枣仁', '白矾', '紫石英', '杏仁', '山萸肉', '五味子', '火麻仁', '土茯苓',
+    '杜仲', '薄荷', '黄芪', '葛根', '天冬', '生麦芽', '滑石', '附子', '瞿麦', '白术', '秦皮', '泽泻',
+    '射干', '小麦', '知母', '防风', '党参', '桔梗', '麻黄', '甘草', '竹茹', '补骨脂', '鸡子黄', '车前子',
+    '蜀椒', '肉苁蓉', '苏子', '茯苓', '龙骨', '牡丹皮', '制大黄', '阿胶', '梓白皮', '砂仁', '白前',
+    '麻子仁', '乌梅', '生石膏', '牡蛎', '远志', '竹叶', '厚朴', '虻虫', '熟地', '姜黄', '芒硝', '百合',
+    '黄连', '柴胡', '薤白', '吴茱萸', '后下', '防己', '菊花', '大豆黄卷', '童便', '水蛭', '豆豉', '干姜',
+    '生地', '神曲', '半夏', '薏苡仁',
+    '0g', '1g', '2g', '3g', '4g', '5g', '6g', '7g', '8g', '9g',
+    '0 g', '1 g', '2 g', '3 g', '4 g', '5 g', '6 g', '7 g', '8 g', '9 g',
+    '0克', '1克', '2克', '3克', '4克', '5克', '6克', '7克', '8克', '9克',
+    '0 克', '1 克', '2 克', '3 克', '4 克', '5 克', '6 克', '7 克', '8 克', '9 克', '注意事项',
+    '1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.',
+    '①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '不必尽剂'
+}
+
+in_filter_list = {'附子汤', '茯苓杏仁甘草汤', '桂枝加厚朴杏子汤', '甘姜苓术汤', '旋复代赭汤', '大半夏汤',
+                  '苓甘五味姜辛汤', '越婢加半夏汤', '白虎加桂枝汤', '黄连阿胶鸡子黄汤', '附子粳米汤', '大承气汤',
+                  '桂枝附子汤', '柴胡桂枝干姜汤', '吴茱萸汤', '小青龙汤', '半夏厚朴汤', '小半夏汤', '麻杏苡甘汤',
+                  '栀子豉汤', '麻黄附子甘草汤', '当归生姜羊肉汤', '葛根芩连汤', '枳实薤白桂枝汤', '薏苡附子败酱散',
+                  '四逆散，理中汤', '风引汤', '黄连汤', '理中汤', '栀子大黄汤', '泽漆汤', '白虎汤', '附子泻心汤',
+                  '栀子柏皮汤', '桂枝新加汤', '桂枝加龙骨牡蛎汤', '旋覆花汤', '四逆散，小陷胸汤', '半夏泻心汤', '葛根汤',
+                  '大黄甘草汤', '大柴胡汤', '麻杏石甘汤', '温经汤', '瓜蒌薤白半夏汤', '调胃承气汤', '生姜泻心汤',
+                  '小承气汤', '干姜黄芩黄连人参汤', '黄芪建中汤', '百合地黄汤', '甘草干姜汤', '干姜人参半夏丸',
+                  '桂枝加葛根汤', '麻黄附子细辛汤，桂枝去芍药汤', '麻黄附子细辛汤', '乌头赤石脂丸', '栝楼瞿麦丸',
+                  '当归芍药散', '桂枝加附子汤', '桂枝加大黄汤', '茵陈蒿汤', '侧柏叶汤', '真武汤', '四逆汤', '升降散',
+                  '四逆散，四君子汤', '小陷胸汤', '大建中汤', '酸枣仁汤', '射干麻黄汤', '薯蓣丸', '麦门冬汤',
+                  '麻黄连翘赤小豆汤', '大黄附子汤', '桂枝芍药知母汤', '炙甘草汤', '香附旋复花汤', '防己茯苓汤',
+                  '大黄蛰虫丸', '桂枝加芍药汤', '乌梅丸', '小柴胡汤', '厚朴七物汤', '芍药甘草汤', '甘草泻心汤',
+                  '防己地黄汤', '橘枳姜汤', '麻子仁丸', '补中益气汤', '侯氏黑散', '黄芪桂枝五物汤', '桂枝甘草汤',
+                  '枳术汤', '泽泻汤', '木防己汤', '桂枝茯苓丸', '苓桂术甘汤', '小续命汤', '厚朴麻黄汤', '芎归胶艾汤',
+                  '甘麦大枣汤', '麻黄升麻汤', '桂枝人参汤', '四逆散', '茵陈五苓散', '大青龙汤', '肾气丸', '奔豚汤',
+                  '白头翁汤', '当归四逆汤', '桂枝汤', '越婢加术汤', '厚朴生姜半夏甘草人参汤', '五苓散', '泻心汤',
+                  '己椒苈黄丸', '大黄牡丹汤', '栝楼桂枝汤', '柴胡桂枝汤', '黄土汤', '桂枝去芍药汤', '抵当汤',
+                  '防己黄芪汤', '白虎加人参汤', '麻黄汤', '桂枝加桂汤', '柴胡加龙骨牡蛎汤', '桂枝麻黄各半汤', '黄芩汤',
+                  '麻黄加术汤', '桃核承气汤', '小建中汤', '竹叶石膏汤',
+                  '人参', '黄柏', '僵蚕', '葶苈子', '肉桂', '黄芩', '饴糖', '川芎', '当归', '木瓜', '土鳖虫', '栀子',
+                  '炙甘草', '蝉蜕', '寒水石', '先煎', '紫菀', '乌药', '枳壳', '陈皮', '白附子', '猪苓', '桃仁',
+                  '冬瓜仁', '山药', '升麻', '赤石脂', '茵陈', '枳实', '牛蒡子', '粳米', '磁石', '苏叶', '香附', '白芍',
+                  '赤小豆', '大黄', '苦参', '代赭石', '椒目', '炮姜', '布包', '菖蒲', '艾叶', '大枣', '三七', '佩兰',
+                  '全蝎', '瓜蒌皮', '血余炭', '生姜', '冲服', '桂枝', '益智仁', '白头翁', '旋复花', '茜草', '败酱草',
+                  '牛膝', '莪术', '三棱', '赤芍', '木通', '鸡内金', '白蔹', '李根白皮', '掰开', '细辛', '天花粉',
+                  '蜂蜜', '玉竹', '乌头', '巴戟天', '泽漆', '蛴螬', '侧柏叶', '贝母', '干漆', '苍术', '款冬花', '虎杖',
+                  '药成后冲入', '石膏', '连翘', '威灵仙', '紫苏叶', '烊化', '羊肉', '独活', '麦冬', '酸枣仁', '白矾',
+                  '紫石英', '杏仁', '山萸肉', '五味子', '火麻仁', '土茯苓', '杜仲', '薄荷', '黄芪', '葛根', '天冬',
+                  '生麦芽', '滑石', '附子', '瞿麦', '白术', '秦皮', '泽泻', '射干', '小麦', '知母', '防风', '党参',
+                  '桔梗', '麻黄', '甘草', '竹茹', '补骨脂', '鸡子黄', '车前子', '蜀椒', '肉苁蓉', '苏子', '茯苓',
+                  '龙骨', '牡丹皮', '制大黄', '阿胶', '梓白皮', '砂仁', '白前', '麻子仁', '乌梅', '生石膏', '牡蛎',
+                  '远志', '竹叶', '厚朴', '虻虫', '熟地', '姜黄', '芒硝', '百合', '黄连', '柴胡', '薤白', '吴茱萸',
+                  '后下', '防己', '菊花', '大豆黄卷', '童便', '水蛭', '豆豉', '干姜', '生地', '神曲', '半夏', '薏苡仁',
+                  '0g', '1g', '2g', '3g', '4g', '5g', '6g', '7g', '8g', '9g',
+                  '分清化浊', '滋补肝肾', '宣畅', '消癥', '通降', '救逆', '止呕', '开闭', '利湿', '转气', '轻宣',
+                  '解肌', '强壮筋骨', '通脉', '补虚', '湿热', '补益心脾', '通阳', '止痉', '滋肾阴', '温肺', '疏散',
+                  '温通', '表里同治', '峻补真阴', '燥湿', '补肝肾', '透热', '祛腐', '寒下', '化瘀', '温化', '泻热溃坚',
+                  '暖脾', '破气', '托毒', '药线引流', '煨脓', '补髓', '温补肾阳', '补土', '固肠', '补气',
+                  '劫烁', '化气', '增水行舟', '肾阳', '和里', '寒痰', '平肝', '同病异治', '养心', '清肠', '健脾',
+                  '阴病治阳', '泄热', '息风', '大补元气', '引火归元', '和解少阳', '催吐', '止遗', '通乳',
+                  '化湿', '解毒', '敛肺', '降浊', '理肺', '发表', '消肿', '苦降', '祛湿', '风痰', '驱蛔', '逆流挽舟',
+                  '止汗', '开达膜原', '舒筋', '杀虫', '调和肝脾', '涩精', '里热', '三焦分消', '滋燥', '消疳',
+                  '芳香化湿', '攻逐血结', '止带', '肺燥', '水饮', '补益气血', '凉血', '清肺', '补血',
+                  '清气分热', '续筋', '回阳', '固冲', '潜镇', '清肝', '急则治其标', '壮水之主', '辟秽',
+                  '温阳止泻', '异病同治', '导药', '淡渗', '通络', '凉肝', '破阴', '通因通用', '敛疮', '举陷',
+                  '内泻热结', '散瘀', '宣肺', '收口', '轻下', '酸甘化阴', '调血', '甘寒', '下气', '逐痰', '虚则补其母',
+                  '镇心', '养血', '补阳', '发汗', '止泻', '排脓', '温下', '疏肝和胃', '助阳', '软坚', '补益肝肾',
+                  '三因制宜', '温下寒积', '透疹', '消食', '透营', '透邪', '生新', '实卫', '活络', '通窍', '下病上取',
+                  '痰瘀同治', '芳香', '宣畅气机', '兼清', '温经', '益智', '开郁', '疏散外风', '补阴', '升阳', '安神',
+                  '益火之源', '涵木', '劫痰', '生血', '清泻', '解表', '滋润', '外导', '驱虫', '清脏腑热', '疏风',
+                  '滋阴降火', '温脏安蛔', '分消走泄', '热结', '泻火', '润肺', '清里', '搜风', '养阴', '清热',
+                  '攻补兼施', '缓消', '透脓', '峻下', '生津', '补脾', '表里双解', '滋阴', '实热', '固崩', '利咽',
+                  '益火', '润肠', '运脾', '除湿', '补心', '芳香开窍', '壮阳', '涌吐', '和血', '宣通', '调理气机',
+                  '气血双补', '挂线疗法', '祛暑', '退翳', '化痰', '甘温除大热', '存津液', '固脱', '调和肠胃', '益气',
+                  '补肾阳', '平肝熄风', '消痞', '滋水涵木', '化积', '止血', '祛寒', '清暑', '宣利', '逐水', '泻热',
+                  '正治', '止痒', '攻积', '苦辛', '苦温燥湿', '解郁', '生肌', '清上', '标本兼治', '导滞', '益胃',
+                  '固精', '渗湿', '攻逐', '利水', '调经', '生金', '开音', '祛邪', '攻下', '温脏', '平喘', '箍围',
+                  '和胃', '散热', '回乳', '扶正', '温补', '祛痰', '破瘀', '凉开', '生脉', '除满', '疏肝', '分消',
+                  '退黄', '气血同治', '止呃', '内泻', '以泻代清', '化癥', '清退虚热', '醒神', '柔肝', '益胃生津',
+                  '行气', '化滞', '镇惊', '金水相生', '散寒', '提壶揭盖', '宽胸', '温燥', '透热转气', '清心', '清胃',
+                  '润下', '反治', '安胎', '养胃生津', '辛开', '祛风湿', '塞因塞用', '益髓', '降火',
+                  '辛润', '固表', '降逆', '接骨', '理脾', '甘温除热', '明日', '轻宣外燥', '釜底抽薪', '以消阴翳',
+                  '泻下', '利尿', '下瘀', '润燥', '清利', '脾胃', '调和', '凉润', '缓急', '收敛', '泄下',
+                  '冷积', '滋养心神', '填精', '止利', '和中', '温中', '涩肠', '清宣', '敛阴', '温肾', '清胆和胃',
+                  '化饮', '平熄内风', '存阴', '熄风', '祛瘀', '补中', '安蛔', '温阳', '消积', '辛温', '血脉',
+                  '上病下取', '纳气', '补肾', '强筋骨', '益精', '暖肝', '摄血', '清燥', '祛瘀生新',
+                  '缓则治其本', '逐瘀', '通痹', '酸苦涌泄', '保胃气', '滋养', '散结', '清虚热', '调补',
+                  '化浊', '阴阳双补', '以制阳光', '实则泻其子', '祛风', '增液', '水湿', '辛凉', '胜湿', '活血',
+                  '温里', '理气', '长肉', '交通心肾', '通淋', '通便', '清胆', '阳病治阴', '潜阳', '通腑', '重镇',
+                  '明目', '泻肝', '养营', '消散', '消阴', '导热', '升清', '复脉', '破血', '醒脾', '顽痰',
+                  '降气', '止咳', '急下', '和解', '清营', '固摄', '消痈', '培土', '开窍', '清退暑热', '滋水', '镇肝'
+                  '虚火','外感未解', '气血不足', '络阻失养', '失润', '阳脱', '痰浊闭阻', '阴伤', '饮食积滞',
+                  '泻下', '利尿', '下瘀', '润燥', '清利', '脾胃', '调和', '凉润', '缓急', '收敛', '泄下',
+                  '正气衰微', '腑实', '里实', '阳衰', '寒盛', '里燥', '运行不畅', '营卫', '夹湿', '肠腑积滞', '阳虚',
+                  '阴亏', '心神失养', '虚火', '痹阻', '瘀滞', '肠热', '伤津', '实证', '实邪', '精血不足', '筋骨失荣',
+                  '虚中夹热', '里寒', '虚中夹实', '实邪阻滞', '表邪未解', '虚证', '亏虚', '湿滞', '郁热', '虚火',
+                  '表邪未解', '太阳', '阳明', '少阳', '太阴', '少阴', '厥阴', '气滞', '气陷', '气闭', '气脱', '血虚',
+                  '血瘀', '血热', '血寒', '血燥', '血脱', '气血两虚', '气不摄血', '气随血脱', '气滞血瘀', '津液不足',
+                  '津亏', '血燥', '津枯', '血瘀', '水停', '阳亢', '阴液亏耗', '肺卫失宣', '虚损', '内湿', '郁热', '虚中夹滞',
+                  '表邪未解', '真阳衰微', '气营两燔', '外邪束表', '内寒', '虚火', '毒邪外透', '肝肾不足', '郁热', '内风', '正气亏虚',
+                  '气阻', '气不化津', '津亏', '热结', '痰湿', '痰饮', '水饮', '饮停', '风水', '湿阻', '燥伤',
+                  '热毒内盛', '津气亏虚', '虚损', '阴虚', '虚中夹实', '阳虚', '阴阳两虚', '阴盛格阳', '阳盛格阴',
+                  '亡阴', '亡阳', '阴损及阳', '阳损及阴', '火旺', '水泛', '上扰清窍', '阴不敛阳', '阳不摄阴', '阴阳离决', '虚阳',
+                  '真寒假热', '真热假寒', '上热下寒', '络瘀', '虚热', '动血', '瘀血', '表里', '心气', '心阴', '心阳', '心火',
+                  '心脉', '心窍', '痰火', '水气', '心肾', '肺阴', '风热', '燥邪', '痰湿', '肺热', '肺失宣降', '肺络', '瘀阻',
+                  '虚象', '脾气', '脾阳', '脾阴', '脾不统血', '脾虚', '健运', '肝气', '肝火', '肝血', '肝阴', '肝阳', '肝风', '寒滞',
+                  '肝脉', '湿热', '肝郁', '脾虚', '肝胃', '肾阴', '肾阳', '肾精', '肾不纳气', '肾虚', '命门', '肾虚', '肾虚',
+                  '胃气', '胃阴', '胃火', '食滞', '胃气', '大肠湿热', '肠燥', '实热', '湿热', '胆郁', '痰扰', '经络', '经气', '经脉',
+                  '湿热', '筋脉失养', '瘀阻', '六淫', '暑伤', '湿阻', '燥伤', '火毒', '温邪', '疫毒',
+                  '伏邪', '七情', '痰瘀', '入络', '虚劳', '五志化火', '寒饮', '中阳不足', '气虚', '余热未清', '内热',
+                  '思虑伤脾', '惊恐伤肾', '卫分', '营分', '阳热', '阴寒', '邪热', '卫表', '不固', '实火', '上炎',
+                  '湿邪', '暑邪', '火邪', '寒邪', '燥邪', '胃肠积热', '胃热', '外感风寒', '外寒内饮',
+                  '内饮', '瘀热', '胃热炽盛', '风寒束表', '阳气', '内蕴', '互结', '痰气', '热瘀', '邪热', '气机',
+                  '郁滞', '胃失和降', '宗气', '津液受损', '卫阳', '不固', '迫血妄行', '瘀热', '表虚', '表实', '邪毒',
+                  '热盛', '疏泄', '腑实不通', '湿邪困阻', '郁滞', '阳气', '邪毒', '腑气', '瘀血内阻', '清阳', '虚寒',
+                  '热扰', '积热', '运化', '邪伏', '暑湿', '伤寒', '胃寒', '内伤', '虚冷', '表实', '津液耗伤', '津伤',
+                  '水湿', '内停', '内郁', '少阳', '枢机', '冲任', '胞宫', '血海', '肝郁', '胞脉', '带脉', '血虚', '易虚易实',
+                  '胎毒内蕴', '疳积成疾', '惊风', '痰热', '上实', '下虚', '本虚', '标实', '升降', '开阖', '燥湿', '风痰', '水气',
+                  '火毒', '瘀阻', '毒损', '虚阳', '真元', '髓海', '官窍', '由表入里', '由里出表', '由实转虚',
+                  '因虚致实', '寒化', '热化', '直中脏腑', '并病', '疾病转归', '阳虚', '阴虚', '痰湿',
+                  '气郁', '血瘀', '同病异机', '表寒里热', '上盛', '下虚', '半表', '半里', '三焦', '壅滞', '营卫',
+                  '表虚不固', '邪伏', '膜原', '热入', '血室', '虚实夹杂', '寒热错杂', '燥湿', '风火', '痰瘀', '毒瘀',
+                  '湿浊', '燥热', '寒凝', '血涩', '热极', '生风', '因郁', '因病致郁', '化热', '气阴', '两虚', '阴阳',
+                  '俱损', '同病', '痰瘀', '寒热互结', '燥湿相兼', '风水', '下注', '肝郁', '化火', '阳虚',
+                  '大气', '下陷', '下陷', '龙雷火动', '相火', '君火', '邪之所凑', '其气必虚', '正气存内',
+                  '邪不可干', '至虚有盛候', '大实有羸状', '因而越之', '引而竭之', '形不足者', '温之以气', '毒损络脉'
+                  '温热', '心神', '风邪', '寒邪', '热邪', '风邪', '中气', '里热', '当以', '拟以', '治当', '当用', '拟用', '为治则',
+                  '为治', '选用', '施治', '当予', '所至', '中医辨证', '注意事项', '更动', '变更', '不增', '未作加减',
+                  }
+
+in_filter_list_B = {
+                    }
+
+in_exception = {'曾', '服', '尝试', '近日', '曾', '近期', '此前', '经外院', '已', '经', '自行', '主诉', '现病史',
+                '性别', '姓名', '辅助检查', '现症', '刻下症', '刻下', '查体', '年龄', '平素', '感风寒', '畏风寒', '恶风寒',
+                '遇风寒', '受风寒', '平素', '个人史', '浮', '沉', '伏', '细', '长', '短', '弦', '紧', '缓', '硬', '软', '滑',
+                '涩', '数', '迟', '疾', '虚', '弱', '微', '有力', '弹指', '促', '代', '结', '革', '牢', '洪', '芤', '濡', '淡',
+                '暗', '红', '绛', '紫', '青', '苔', '白', '黄', '灰', '黑', '薄', '厚', '燥', '腻', '腐', '舌', '脉', '苔'}
+
+in_keyi = {}
+out_keyi = set()
+
+input_file = './Gen/merged_new.jsonl'  # 输入文件路径
+output_file = './Gen/merged_new_2.jsonl'  # 输出文件路径
+process_inf = 'output'
+
+split = True
+mod = 1
+last_n = 2
+bracket_filt_max_num = 0
+filt_line = 1000
+sent_wise = False
+
+if split:
+    print(f'文本已分开！！！！！！')
+
+process_jsonl(input_file,
+              output_file,
+              mod,
+              process_inf,
+              out_filter_list,
+              out_keyi,
+              out_filter_list_B,
+              out_exception,
+              sent_wise,
+              split,
+              last_n,
+              bracket_filt_max_num,
+              filt_line)
