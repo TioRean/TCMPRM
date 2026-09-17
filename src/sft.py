@@ -119,8 +119,8 @@ def batched_preprocess_function(examples, tokenizer, max_length=5200):
     }
 model_name = 'Qwen/Qwen2.5-7B-Instruct'
 
-data_path_case = os.path.join('/src/data/case-cot.json')
-data_path_qa = os.path.join('/src/data/qa-cot.json')
+data_path_case = os.path.join('/src/data/case-cot.jsonl')
+data_path_know = os.path.join('/src/data/know-cot.jsonl')
 MAX_LENGTH = 4000
 
 tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -148,9 +148,7 @@ lora_config = LoraConfig(
 model = get_peft_model(model, lora_config)
 model.print_trainable_parameters()
 
-
-with open(data_path_case, 'r', encoding='utf-8') as f:
-    case_dataset = Dataset.from_list(json.load(f))
+case_dataset = Dataset.from_json(data_path_case)
 
 case_dataset = case_dataset.map(
     lambda x: batched_preprocess_function(x, tokenizer, max_length=MAX_LENGTH),
@@ -158,16 +156,15 @@ case_dataset = case_dataset.map(
     remove_columns=["messages"]
 )
 
-with open(data_path_qa, 'r', encoding='utf-8') as f:
-    qa_dataset = Dataset.from_list(json.load(f))
+know_dataset = Dataset.from_json(data_path_know)
 
-qa_dataset = qa_dataset.map(
+know_dataset = know_dataset.map(
     lambda x: batched_preprocess_function(x, tokenizer, max_length=MAX_LENGTH),
     batched=True,
     remove_columns=["messages"]
 )
 
-dataset = concatenate_datasets([case_dataset, case_dataset, qa_dataset])
+dataset = concatenate_datasets([case_dataset, case_dataset, know_dataset])
 
 split_dataset = dataset.train_test_split(test_size=0.025, seed=42, shuffle=True)
 
