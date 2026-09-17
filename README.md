@@ -1,3 +1,5 @@
+![picture](./assets/R.jpg)
+
 # Aligning Language Models to Individual-Practitioner-Level TCM Prescription Preferences Using Synthetic Clinical Cases
 
 ## Generation Task:
