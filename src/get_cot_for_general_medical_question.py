@@ -1,31 +1,17 @@
-import os
-import random
 import json
-from tqdm import tqdm
 import argparse
-import re
 import traceback
 import copy
 from concurrent.futures import ThreadPoolExecutor
 from retrying import retry
-from openai import OpenAI
 import openai
-import httpx
-from concurrent.futures import as_completed
-import argparse
-import copy
-import json
+from openai import OpenAI
+from openai import APITimeoutError
 import os
 import random
 import re
-import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 import httpx
-from openai import OpenAI
-from openai import APITimeoutError
-import httpx
-from openai import OpenAI
-from openai import APITimeoutError
 from tqdm import tqdm
 
 verify_prompt = """<Model Response>  
@@ -174,7 +160,7 @@ The <Thought Process> above reflects the model's reasoning based on the <Questio
 
 1. Be presented as step-by-step reasoning, with each thought on a new line separated by a line break.
 2. Avoid structured titles or formatting, focusing on natural transitions. Use casual and natural language for transitions or validations, such as "hmm," "oh," "also," or "wait."
-4. Expand the content, making the reasoning richer, more detailed, and logically clear while still being conversational and intuitive.
+3. Expand the content, making the reasoning richer, more detailed, and logically clear while still being conversational and intuitive.
 
 Return directly the revised natural thinking in JSON format as follows:
 ```json
